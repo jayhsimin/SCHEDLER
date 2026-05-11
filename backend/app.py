@@ -40,6 +40,8 @@ def schedule(request: ScheduleRequest) -> ScheduleResult:
     # ── Step 1: LLM extracts constraints (with RAG grounding + structured output) ──
     constraints = extract_constraints_from_text(request.text, employees, request.daily_staff_count)
 
+    ai_understanding = constraints.explanation  # LLM's self-reported interpretation
+
     # ── Step 2 (pre-solve validator): are the constraints physically satisfiable? ──
     feasible, feasibility_errors = validate_feasibility(employees, constraints, request.text)
     if not feasible:
@@ -47,6 +49,7 @@ def schedule(request: ScheduleRequest) -> ScheduleResult:
         return ScheduleResult(
             assignments={},
             explanation=explanation,
+            ai_understanding=ai_understanding,
             constraints=constraints,
             conflict_reasons=feasibility_errors,
         )
@@ -58,6 +61,7 @@ def schedule(request: ScheduleRequest) -> ScheduleResult:
         return ScheduleResult(
             assignments={},
             explanation="系統判斷排班約束無法滿足：\n" + "\n".join(conflicts),
+            ai_understanding=ai_understanding,
             constraints=constraints,
             conflict_reasons=conflicts,
         )
@@ -76,6 +80,7 @@ def schedule(request: ScheduleRequest) -> ScheduleResult:
     return ScheduleResult(
         assignments=result["assignments"],
         explanation=explanation,
+        ai_understanding=ai_understanding,
         constraints=constraints,
         conflict_reasons=violations,
     )

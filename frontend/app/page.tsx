@@ -11,6 +11,7 @@ interface Employee {
 interface ScheduleResponse {
   assignments: Record<string, string[]>;
   explanation: string;
+  ai_understanding?: string;
   conflict_reasons?: string[];
 }
 
@@ -185,57 +186,76 @@ export default function Home() {
             </section>
           )}
 
+
           {result && (
             <>
-              <section className="panel">
-                <div className="result-header">
-                  <h2 className="panel-title" style={{ margin: 0 }}>本週班表</h2>
-                  <span className="result-badge">
-                    共 {Object.values(result.assignments).flat().length} 班次
-                  </span>
+              {result.ai_understanding && (
+                <div className="ai-understanding">
+                  <span className="ai-understanding-icon">💡</span>
+                  <span><strong>AI 理解：</strong>{result.ai_understanding}</span>
                 </div>
+              )}
 
-                <div className="calendar">
-                  {DAYS.map(day => {
-                    const ids = result.assignments[day] ?? [];
-                    const weekend = day === 'Saturday' || day === 'Sunday';
-                    return (
-                      <div key={day} className={`cal-col${weekend ? ' weekend' : ''}`}>
-                        <div className="cal-head">
-                          <span className="cal-zh">{DAY_ZH[day]}</span>
-                          <span className="cal-en">{DAY_EN[day]}</span>
-                        </div>
-                        <div className="cal-body">
-                          {ids.length > 0
-                            ? ids.map(id => (
-                              <div
-                                key={id} className="cal-tag"
-                                style={{
-                                  background: EMP_COLORS[id] + '1a',
-                                  borderColor: EMP_COLORS[id],
-                                  color: EMP_COLORS[id],
-                                }}
-                              >
-                                <span
-                                  className="cal-dot"
-                                  style={{ background: EMP_COLORS[id] }}
-                                >{id}</span>
-                                {nameMap[id] || id}
-                              </div>
-                            ))
-                            : <span className="cal-rest">休</span>
-                          }
-                        </div>
-                        <div className="cal-foot">{ids.length} 人</div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </section>
+              {Object.keys(result.assignments).length > 0 ? (
+                <section className="panel">
+                  <div className="result-header">
+                    <h2 className="panel-title" style={{ margin: 0 }}>本週班表</h2>
+                    <span className="result-badge">
+                      共 {Object.values(result.assignments).flat().length} 班次
+                    </span>
+                  </div>
 
-              {result.conflict_reasons && result.conflict_reasons.length > 0 && (
+                  <div className="calendar">
+                    {DAYS.map(day => {
+                      const ids = result.assignments[day] ?? [];
+                      const weekend = day === 'Saturday' || day === 'Sunday';
+                      return (
+                        <div key={day} className={`cal-col${weekend ? ' weekend' : ''}`}>
+                          <div className="cal-head">
+                            <span className="cal-zh">{DAY_ZH[day]}</span>
+                            <span className="cal-en">{DAY_EN[day]}</span>
+                          </div>
+                          <div className="cal-body">
+                            {ids.length > 0
+                              ? ids.map(id => (
+                                <div
+                                  key={id} className="cal-tag"
+                                  style={{
+                                    background: EMP_COLORS[id] + '1a',
+                                    borderColor: EMP_COLORS[id],
+                                    color: EMP_COLORS[id],
+                                  }}
+                                >
+                                  <span
+                                    className="cal-dot"
+                                    style={{ background: EMP_COLORS[id] }}
+                                  >{id}</span>
+                                  {nameMap[id] || id}
+                                </div>
+                              ))
+                              : <span className="cal-rest">休</span>
+                            }
+                          </div>
+                          <div className="cal-foot">{ids.length} 人</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              ) : (
                 <section className="panel conflict-panel">
-                  <h2 className="panel-title">衝突說明</h2>
+                  <h2 className="panel-title">無法產生班表</h2>
+                  <ul className="conflict-list">
+                    {(result.conflict_reasons ?? [result.explanation]).map((r, i) => (
+                      <li key={i}>{r}</li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+
+              {Object.keys(result.assignments).length > 0 && result.conflict_reasons && result.conflict_reasons.length > 0 && (
+                <section className="panel conflict-panel">
+                  <h2 className="panel-title">驗證警告</h2>
                   <ul className="conflict-list">
                     {result.conflict_reasons.map((r, i) => <li key={i}>{r}</li>)}
                   </ul>

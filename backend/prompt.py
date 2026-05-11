@@ -12,8 +12,17 @@ from .schemas import (
 LLM_PROMPT_TEMPLATE = '''你是排班約束抽取器。將使用者的自然語言描述精確解析成 JSON。
 只輸出合法 JSON 物件，不包含任何其他文字、說明或 Markdown 標記。
 
-支援的約束類型與欄位說明：
+必要欄位（每次都要輸出）：
+- intent：只能是 "schedulable" 或 "impossible"
+  - "schedulable"：可以排班（包含一般情況、部分人請假、員工不情願但仍須上班等）
+  - "impossible"：因事實/客觀因素導致全員真的無法上班（如天災、停班公告、世界末日等）
+  - 「不想上班但不得不上班」屬於 schedulable，不是 impossible
+- explanation：用一句繁體中文說明你如何理解這個需求（給使用者確認用）
+
+約束欄位：
 {
+  "intent": "schedulable",
+  "explanation": "A 周二起出國三天，B 周三請事假，周三至少三人排班",
   "unavailabilities": [
     {"employee_id":"A", "start_day":"Tuesday", "end_day":"Thursday", "reason":"出國", "type":"vacation"},
     {"employee_id":"B", "start_day":"Wednesday", "reason":"事假", "type":"leave"}
@@ -70,9 +79,10 @@ def _build_rag_context(employees: List[Employee], daily_staff_count: Optional[in
         lines.append(f"每日排班最低人數：{daily_staff_count} 人（每天至少須有這麼多人排班）")
     lines.append("排班週期：Monday 至 Sunday（共 7 天）")
     lines.append(
-        "【重要規則】若使用者描述的情境意味著全員或部分員工無法上班（包含比喻性描述，如「世界末日」、「沒人可以上班」），"
-        "請如實將對應員工標記為整週不可排班（start_day: Monday, end_day: Sunday）。"
-        "絕對不可臆造員工可以上班的結果。"
+        "【intent 判斷規則】\n"
+        "- intent=\"impossible\"：僅限員工因客觀事實（天災、世界末日、停班公告）真的「無法」上班。\n"
+        "- intent=\"schedulable\"：所有其他情況，包含員工「不想」但仍須上班（如「沒人想上班，但不得不上班」）。\n"
+        "- 「不想」≠「無法」。有轉折語（不得不、還是要、仍須）時，intent 一律為 schedulable，unavailabilities 為空陣列。"
     )
     return "\n".join(lines)
 

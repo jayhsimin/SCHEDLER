@@ -70,7 +70,13 @@ class MutualExclusion(BaseModel):
     """These employees cannot work on the same day."""
     employee_ids: List[str]
 
+class SchedulingIntent(str, Enum):
+    schedulable = "schedulable"        # normal / partial constraints / reluctant-but-available
+    impossible = "impossible"          # physically cannot work (disaster, total block, etc.)
+
 class ConstraintSet(BaseModel):
+    intent: Optional[SchedulingIntent] = None
+    explanation: Optional[str] = None  # LLM's Chinese summary of how it understood the request
     unavailabilities: List[Unavailability] = []
     day_minimums: List[DayMinimum] = []
     day_maximums: List[DayMaximum] = []
@@ -88,6 +94,7 @@ class ScheduleRequest(BaseModel):
 class ScheduleResult(BaseModel):
     assignments: dict
     explanation: str
+    ai_understanding: Optional[str] = None  # LLM's explanation of how it read the request
     constraints: ConstraintSet
     daily_staff_count: Optional[int] = None
     conflict_reasons: Optional[List[str]] = None

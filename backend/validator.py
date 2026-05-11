@@ -5,14 +5,18 @@ Three-layer hallucination guard:
 """
 from typing import List, Tuple
 
-from .schemas import ConstraintSet, Employee, Weekday
+from .schemas import ConstraintSet, Employee, SchedulingIntent, Weekday
 from .solver import DAYS, build_unavailability_map
 
-# Text patterns that signal "nobody can work" scenarios
+# Fallback keyword list — only used when LLM path is unavailable (regex fallback)
 _IMPOSSIBLE_PHRASES = [
     "世界末日", "沒人可以上班", "沒有人可以上班", "全員無法上班",
     "所有人都無法上班", "全體請假", "所有人請假", "沒人可上班",
     "無人可排班", "末日", "大家都不能上班",
+]
+_OVERRIDE_PHRASES = [
+    "不得不上班", "還是要上班", "仍須上班", "但不得不", "但還是要",
+    "不得不排班", "還是得上班",
 ]
 
 
@@ -32,16 +36,25 @@ def validate_feasibility(
     errors: List[str] = []
     unavail_map = build_unavailability_map(constraints)
 
-    # ── Layer A: text-level impossible-scenario detection ──
-    # If user says "no one can work" but LLM extracted zero unavailabilities,
-    # the LLM hallucinated a feasible world — reject immediately.
-    triggered = any(phrase in original_text for phrase in _IMPOSSIBLE_PHRASES)
-    if triggered and not constraints.unavailabilities:
-        errors.append(
-            "輸入描述了全員無法上班的情境，但系統未能從中解析出具體約束。"
-            "請明確說明哪些員工在哪些日期不可上班，或確認 Groq API 金鑰正常。"
-        )
+    # ── Layer A: intent-based impossible-scenario detection ──
+    if constraints.intent == SchedulingIntent.impossible:
+        # LLM explicitly said scheduling is impossible
+        reason = constraints.explanation or "LLM 判斷此情境為全員無法上班"
+        errors.append(f"無法排班：{reason}")
         return False, errors
+
+    if constraints.intent is None:
+        # Fallback path (no LLM): use keyword heuristic
+        triggered = (
+            any(phrase in original_text for phrase in _IMPOSSIBLE_PHRASES)
+            and not any(phrase in original_text for phrase in _OVERRIDE_PHRASES)
+        )
+        if triggered and not constraints.unavailabilities:
+            errors.append(
+                "輸入描述了全員無法上班的情境，但系統未能從中解析出具體約束。"
+                "請明確說明哪些員工在哪些日期不可上班。"
+            )
+            return False, errors
 
     # ── Layer B: all employees blocked ──
     fully_blocked = [e for e in staff_list if _all_days_blocked(e.id, unavail_map)]
