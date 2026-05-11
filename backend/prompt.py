@@ -115,6 +115,27 @@ def parse_simple_constraints(text: str, employees: List[Employee]) -> Constraint
     for emp in employees:
         if emp.name not in text:
             continue
+        # "X周N到周M出國/旅遊/出差" → explicit range absence
+        vac_range = re.search(
+            rf"{re.escape(emp.name)}周([一二三四五六日])到(?:周|禮拜)?([一二三四五六日])(?:要)?(?:出國|旅遊|出差|請假|不能上班|無法上班)",
+            text,
+        )
+        if vac_range:
+            start_idx = DAYS_OFFSET.get(vac_range.group(1), 0)
+            end_idx = DAYS_OFFSET.get(vac_range.group(2), 6)
+            if end_idx < start_idx:
+                end_idx = 6
+            constraints.unavailabilities.append(
+                Unavailability(
+                    employee_id=emp.id,
+                    start_day=DAYS_EN[start_idx],
+                    end_day=DAYS_EN[end_idx] if end_idx != start_idx else None,
+                    reason="出國",
+                    type="vacation",
+                )
+            )
+            continue  # skip the "N天" pattern for this employee
+
         # "X周N開始要出國/旅遊M天" → multi-day absence
         vac = re.search(
             rf"{re.escape(emp.name)}周([一二三四五六日])(?:開始)?(?:要)?(?:出國|旅遊|出差)([二三四五]?)天?",
@@ -152,6 +173,7 @@ def parse_simple_constraints(text: str, employees: List[Employee]) -> Constraint
             )
 
     # ── Day minimums ──
+    # Pattern A: "這周N排班至少要有M人"
     for m in re.finditer(r"(?:這?周([一二三四五六日]))?排班至少(?:要)?有?([一二三四五六七八九十\d]+)個?人", text):
         day_ch = m.group(1)
         min_staff = chinese_numeral_to_int(m.group(2))
@@ -159,6 +181,13 @@ def parse_simple_constraints(text: str, employees: List[Employee]) -> Constraint
             day = DAYS_EN[DAYS_OFFSET[day_ch]] if day_ch else None
             if day:
                 constraints.day_minimums.append(DayMinimum(day=day, min_staff=min_staff))
+    # Pattern B: "周N至少要有M人排班"
+    for m in re.finditer(r"這?周([一二三四五六日])至少(?:要)?有?([一二三四五六七八九十\d]+)個?人(?:排班)?", text):
+        day_ch = m.group(1)
+        min_staff = chinese_numeral_to_int(m.group(2))
+        if min_staff:
+            day = DAYS_EN[DAYS_OFFSET[day_ch]]
+            constraints.day_minimums.append(DayMinimum(day=day, min_staff=min_staff))
 
     # ── Day maximums ──
     max_m = re.search(r"一天最多(?:只)?(?:需)?([一二三四五六七八九十\d]+)人?", text)
