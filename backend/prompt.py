@@ -67,7 +67,7 @@ def _build_rag_context(employees: List[Employee], daily_staff_count: Optional[in
         cap = emp.max_shifts_per_week or 5
         lines.append(f"  - 員工 {emp.id}（{role_str}）：每週最多排 {cap} 天")
     if daily_staff_count is not None:
-        lines.append(f"每日應排班人數上限：{daily_staff_count} 人")
+        lines.append(f"每日排班最低人數：{daily_staff_count} 人（每天至少須有這麼多人排班）")
     lines.append("排班週期：Monday 至 Sunday（共 7 天）")
     lines.append(
         "【重要規則】若使用者描述的情境意味著全員或部分員工無法上班（包含比喻性描述，如「世界末日」、「沒人可以上班」），"
@@ -106,9 +106,7 @@ def _extract_json(raw: str) -> dict:
     return json.loads(cleaned)
 
 
-def parse_simple_constraints(
-    text: str, employees: List[Employee], daily_staff_count: Optional[int] = None
-) -> ConstraintSet:
+def parse_simple_constraints(text: str, employees: List[Employee]) -> ConstraintSet:
     text = text.replace("禮拜", "周")
     constraints = ConstraintSet()
     emp_ids = {e.id for e in employees}
@@ -179,12 +177,6 @@ def parse_simple_constraints(
         if id1 in emp_ids and id2 in emp_ids:
             constraints.mutual_exclusions.append(MutualExclusion(employee_ids=[id1, id2]))
 
-    # ── daily_staff_count → hard per-day min + max ──
-    if daily_staff_count is not None:
-        constraints.day_maximums.append(DayMaximum(max_staff=daily_staff_count))
-        for day in Weekday:
-            constraints.day_minimums.append(DayMinimum(day=day, min_staff=daily_staff_count))
-
     # ── Role-based minimum ──
     role_m = re.search(r"老員工?每天至少要有(.+?)個?人", text)
     if role_m:
@@ -246,7 +238,15 @@ def extract_constraints_from_text(
             response.raise_for_status()
             raw = response.json()["choices"][0]["message"]["content"]
             parsed = _extract_json(raw)
-            return ConstraintSet.model_validate(parsed)
+            constraints = ConstraintSet.model_validate(parsed)
         except Exception:
-            pass
-    return parse_simple_constraints(text, employees, daily_staff_count)
+            constraints = parse_simple_constraints(text, employees)
+    else:
+        constraints = parse_simple_constraints(text, employees)
+
+    # Always apply daily_staff_count as per-day minimum (regardless of LLM or fallback path)
+    if daily_staff_count is not None:
+        for day in Weekday:
+            constraints.day_minimums.append(DayMinimum(day=day, min_staff=daily_staff_count))
+
+    return constraints
