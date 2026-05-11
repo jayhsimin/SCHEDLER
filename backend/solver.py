@@ -77,6 +77,11 @@ def solve_schedule(staff_list: List[Employee], constraints: ConstraintSet) -> di
         if em.employee_id in emp_ids:
             model.Add(sum(work[(em.employee_id, d)] for d in DAYS) >= em.min_shifts)
 
+    # Per-employee maximum shifts ("只上N天")
+    for em in constraints.max_shifts_per_employee:
+        if em.employee_id in emp_ids:
+            model.Add(sum(work[(em.employee_id, d)] for d in DAYS) <= em.max_shifts)
+
     # Role-based day minimums
     for rm in constraints.day_minimums_by_role:
         role_emps = [e for e in staff_list if e.role == rm.role]

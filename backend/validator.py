@@ -160,6 +160,14 @@ def validate_assignments(
                 f"⚠ 員工 {em.employee_id} 只排了 {count} 天，未達最低要求 {em.min_shifts} 天。"
             )
 
+    # Per-employee shift maximum check ("只上N天")
+    for em in constraints.max_shifts_per_employee:
+        count = shift_counts.get(em.employee_id, 0)
+        if count > em.max_shifts:
+            violations.append(
+                f"⚠ 員工 {em.employee_id} 被排了 {count} 天，超過指定上限 {em.max_shifts} 天。"
+            )
+
     # Per-employee shift cap check
     for e in staff_list:
         cap = e.max_shifts_per_week or 5

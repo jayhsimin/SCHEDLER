@@ -51,6 +51,10 @@ class MinShiftsPerEmployee(BaseModel):
     employee_id: str
     min_shifts: int
 
+class MaxShiftsPerEmployee(BaseModel):
+    employee_id: str
+    max_shifts: int
+
 class DayMinimumByRole(BaseModel):
     role: EmployeeRole
     day: Optional[Weekday] = None
@@ -82,6 +86,7 @@ class ConstraintSet(BaseModel):
     day_maximums: List[DayMaximum] = []
     day_minimums_by_role: List[DayMinimumByRole] = []
     min_shifts_per_employee: List[MinShiftsPerEmployee] = []
+    max_shifts_per_employee: List[MaxShiftsPerEmployee] = []
     fairness_constraints: List[FairnessConstraint] = []
     preferences: List[ShiftPreference] = []
     mutual_exclusions: List[MutualExclusion] = []

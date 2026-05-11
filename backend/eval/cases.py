@@ -38,6 +38,8 @@ class ExtractionCheck:
     day_minimums: List[Tuple[str, int]] = field(default_factory=list)
     # employee ids that must appear in min_shifts_per_employee
     min_shifts_employees: List[str] = field(default_factory=list)
+    # (employee_id, max_shifts) tuples that must appear in max_shifts_per_employee
+    max_shifts_employees: List[Tuple[str, int]] = field(default_factory=list)
 
 
 @dataclass
@@ -53,6 +55,8 @@ class ScheduleCheck:
     global_min_per_day: Optional[int] = None
     # every day must have at most this many workers
     global_max_per_day: Optional[int] = None
+    # (employee_id, max_shifts) — employee must not exceed this many shifts total
+    max_shifts_per_emp: List[Tuple[str, int]] = field(default_factory=list)
 
 
 @dataclass
@@ -250,6 +254,45 @@ CASES: List[EvalCase] = [
         employees=FIVE,
         schedule=ScheduleCheck(
             global_max_per_day=1,
+        ),
+    ),
+
+    EvalCase(
+        id="TC-15",
+        description="週 normalization + multi-day vacation",
+        text="C週二出國四天",
+        employees=FIVE,
+        extraction=ExtractionCheck(
+            unavailable_pairs=[("C", "Tuesday"), ("C", "Wednesday"), ("C", "Thursday"), ("C", "Friday")],
+        ),
+        schedule=ScheduleCheck(
+            must_not_work=[("C", "Tuesday"), ("C", "Wednesday"), ("C", "Thursday"), ("C", "Friday")],
+        ),
+    ),
+
+    EvalCase(
+        id="TC-16",
+        description="Per-employee max shifts (只上N天)",
+        text="B只上兩天班",
+        employees=FIVE,
+        extraction=ExtractionCheck(
+            max_shifts_employees=[("B", 2)],
+        ),
+        schedule=ScheduleCheck(
+            max_shifts_per_emp=[("B", 2)],
+        ),
+    ),
+
+    EvalCase(
+        id="TC-17",
+        description="New-employee max shifts (新人只上N天)",
+        text="新人一周只上一天班",
+        employees=FIVE,
+        extraction=ExtractionCheck(
+            max_shifts_employees=[("E", 1)],
+        ),
+        schedule=ScheduleCheck(
+            max_shifts_per_emp=[("E", 1)],
         ),
     ),
 ]

@@ -78,6 +78,16 @@ def _check_extraction(ec: ExtractionCheck, constraints: ConstraintSet) -> List[C
             detail="" if ok else f"min_shifts for {emp_id} not extracted",
         ))
 
+    # max_shifts_employees
+    extracted_emp_maxs = {m.employee_id: m.max_shifts for m in constraints.max_shifts_per_employee}
+    for emp_id, max_val in ec.max_shifts_employees:
+        ok = emp_id in extracted_emp_maxs and extracted_emp_maxs[emp_id] <= max_val
+        results.append(CheckResult(
+            name=f"max_shifts({emp_id}<={max_val})",
+            passed=ok,
+            detail="" if ok else f"max_shifts for {emp_id}<={max_val} not extracted (got {extracted_emp_maxs.get(emp_id, 'missing')})",
+        ))
+
     return results
 
 
@@ -139,6 +149,21 @@ def _check_schedule(sc: ScheduleCheck, assignments: Dict[str, List[str]]) -> Lis
                 name=f"global_max({day_str}<={sc.global_max_per_day})",
                 passed=ok,
                 detail="" if ok else f"{day_str} has {count} workers, global max is {sc.global_max_per_day}",
+            ))
+
+    # max_shifts_per_emp
+    if sc.max_shifts_per_emp:
+        shift_counts: Dict[str, int] = {}
+        for workers in assignments.values():
+            for eid in workers:
+                shift_counts[eid] = shift_counts.get(eid, 0) + 1
+        for emp_id, max_val in sc.max_shifts_per_emp:
+            count = shift_counts.get(emp_id, 0)
+            ok = count <= max_val
+            results.append(CheckResult(
+                name=f"max_shifts_emp({emp_id}<={max_val})",
+                passed=ok,
+                detail="" if ok else f"{emp_id} worked {count} days, max is {max_val}",
             ))
 
     return results
