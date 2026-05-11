@@ -58,13 +58,28 @@ DAYS_OFFSET = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日"
 DAYS_EN = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 
-def make_prompt(text: str, employees: List[Employee], daily_staff_count: Optional[int] = None) -> str:
-    names = ", ".join(employee.name for employee in employees)
-    prompt = LLM_PROMPT_TEMPLATE + f"\n已知員工清單：{names}\n"
+def _build_rag_context(employees: List[Employee], daily_staff_count: Optional[int]) -> str:
+    """RAG grounding: inject factual employee data so the LLM cannot hallucinate phantom workers."""
+    lines = ["【員工事實依據（RAG）】"]
+    lines.append(f"本次排班共 {len(employees)} 名員工，以下是他們的確切資料：")
+    for emp in employees:
+        role_str = "正職" if emp.role and emp.role.value == "regular" else "新進"
+        cap = emp.max_shifts_per_week or 5
+        lines.append(f"  - 員工 {emp.id}（{role_str}）：每週最多排 {cap} 天")
     if daily_staff_count is not None:
-        prompt += f"每日應排班人數：{daily_staff_count} 人\n"
-    prompt += f"使用者輸入：{text}"
-    return prompt
+        lines.append(f"每日應排班人數上限：{daily_staff_count} 人")
+    lines.append("排班週期：Monday 至 Sunday（共 7 天）")
+    lines.append(
+        "【重要規則】若使用者描述的情境意味著全員或部分員工無法上班（包含比喻性描述，如「世界末日」、「沒人可以上班」），"
+        "請如實將對應員工標記為整週不可排班（start_day: Monday, end_day: Sunday）。"
+        "絕對不可臆造員工可以上班的結果。"
+    )
+    return "\n".join(lines)
+
+
+def make_prompt(text: str, employees: List[Employee], daily_staff_count: Optional[int] = None) -> str:
+    rag_context = _build_rag_context(employees, daily_staff_count)
+    return f"{LLM_PROMPT_TEMPLATE}\n{rag_context}\n\n使用者輸入：{text}"
 
 
 def normalize_weekday(chinese: str) -> Optional[str]:
@@ -218,6 +233,7 @@ def extract_constraints_from_text(
             payload = {
                 "model": model,
                 "messages": [{"role": "user", "content": make_prompt(text, employees, daily_staff_count)}],
+                "response_format": {"type": "json_object"},  # structured output
                 "max_tokens": 768,
                 "temperature": 0.0,
             }
