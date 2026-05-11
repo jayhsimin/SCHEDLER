@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem -Path \"c:\\\\Users\\\\USER\\\\Desktop\\\\ai_agent\" | Where-Object { $_.Name -ne \".venv\" } | Format-Table Name, PSIsContainer -AutoSize)"
+    ]
+  }
+}
