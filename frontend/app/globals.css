@@ -71,6 +71,13 @@ html, body {
 }
 .emp-list { display: flex; flex-direction: column; gap: 0.3rem; }
 
+.emp-hint {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  margin-bottom: 0.75rem;
+  margin-top: -0.5rem;
+}
+
 .emp-chip {
   display: flex;
   align-items: center;
@@ -84,7 +91,6 @@ html, body {
   font-size: 0.875rem;
   user-select: none;
 }
-.emp-chip input { display: none; }
 .emp-chip:hover { border-color: #cbd5e1; background: #f8fafc; }
 .emp-chip.selected {
   border-color: var(--c);
@@ -102,7 +108,24 @@ html, body {
 }
 .emp-chip.selected .emp-avatar { background: var(--c); color: white; }
 
-.emp-name { flex: 1; }
+.emp-name-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  border-bottom: 1.5px solid transparent;
+  background: transparent;
+  font-size: 0.875rem;
+  font-family: inherit;
+  font-weight: inherit;
+  color: inherit;
+  outline: none;
+  cursor: text;
+  padding: 0 0 1px;
+  transition: border-color 0.15s;
+}
+.emp-name-input:focus {
+  border-bottom-color: var(--c, #818cf8);
+}
 
 .emp-count {
   text-align: center;

@@ -14,7 +14,7 @@ interface ScheduleResponse {
   conflict_reasons?: string[];
 }
 
-const ALL_EMPLOYEES: Employee[] = [
+const DEFAULT_EMPLOYEES: Employee[] = [
   { id: 'A', name: 'A', role: 'regular' },
   { id: 'B', name: 'B', role: 'regular' },
   { id: 'C', name: 'C', role: 'regular' },
@@ -44,10 +44,13 @@ const DAY_EN: Record<string, string> = {
 };
 
 export default function Home() {
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(
-    new Set(ALL_EMPLOYEES.map(e => e.id))
+  const [employees, setEmployees] = useState<Employee[]>(
+    DEFAULT_EMPLOYEES.map(e => ({ ...e }))
   );
-  const [text, setText] = useState('A周二開始要出國三天，B周三上午要請事假，這周三排班至少要有三個人');
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(
+    new Set(DEFAULT_EMPLOYEES.map(e => e.id))
+  );
+  const [text, setText] = useState('');
   const [dailyStaffCount, setDailyStaffCount] = useState<number | ''>('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ScheduleResponse | null>(null);
@@ -59,13 +62,19 @@ export default function Home() {
     return next;
   });
 
+  const updateName = (id: string, name: string) => {
+    setEmployees(prev => prev.map(e => e.id === id ? { ...e, name } : e));
+  };
+
+  const nameMap = Object.fromEntries(employees.map(e => [e.id, e.name]));
+
   const handleSubmit = async (e: React.SyntheticEvent) => {
     e.preventDefault();
     setError(null);
     setLoading(true);
     setResult(null);
-    const employees = ALL_EMPLOYEES.filter(emp => selectedIds.has(emp.id));
-    const body: Record<string, unknown> = { text, employees };
+    const selectedEmployees = employees.filter(emp => selectedIds.has(emp.id));
+    const body: Record<string, unknown> = { text, employees: selectedEmployees };
     if (dailyStaffCount !== '') body.daily_staff_count = dailyStaffCount;
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
@@ -95,28 +104,36 @@ export default function Home() {
         <aside className="sidebar">
           <section className="panel">
             <h2 className="panel-title">參與人員</h2>
+            <p className="emp-hint">點名稱可修改；點其他處勾選</p>
 
             {(['regular', 'new'] as const).map(role => (
               <div key={role} className="emp-group">
                 <p className="emp-group-label">{role === 'regular' ? '正職員工' : '新進員工'}</p>
                 <div className="emp-list">
-                  {ALL_EMPLOYEES.filter(e => e.role === role).map(emp => (
-                    <label
+                  {employees.filter(e => e.role === role).map(emp => (
+                    <div
                       key={emp.id}
                       className={`emp-chip ${selectedIds.has(emp.id) ? 'selected' : ''}`}
                       style={{ '--c': EMP_COLORS[emp.id] } as React.CSSProperties}
+                      onClick={() => toggle(emp.id)}
                     >
-                      <input type="checkbox" checked={selectedIds.has(emp.id)} onChange={() => toggle(emp.id)} />
                       <span className="emp-avatar">{emp.id}</span>
-                      <span className="emp-name">員工 {emp.id}</span>
-                    </label>
+                      <input
+                        className="emp-name-input"
+                        value={emp.name}
+                        onChange={ev => updateName(emp.id, ev.target.value)}
+                        onClick={ev => ev.stopPropagation()}
+                        placeholder={emp.id}
+                        maxLength={10}
+                      />
+                    </div>
                   ))}
                 </div>
               </div>
             ))}
 
             <p className="emp-count">
-              已選 <strong>{selectedIds.size}</strong> / {ALL_EMPLOYEES.length} 人
+              已選 <strong>{selectedIds.size}</strong> / {employees.length} 人
             </p>
           </section>
 
@@ -135,7 +152,7 @@ export default function Home() {
                 <label>需求描述</label>
                 <textarea
                   value={text} onChange={e => setText(e.target.value)} rows={5}
-                  placeholder="例：A周二開始出國三天，B周三請事假，周三至少三人…"
+                  placeholder="例：小明周二開始出國三天，小華周三請事假，周三至少三人…"
                 />
               </div>
               <button type="submit" disabled={loading || selectedIds.size === 0}>
@@ -180,7 +197,7 @@ export default function Home() {
 
                 <div className="calendar">
                   {DAYS.map(day => {
-                    const names = result.assignments[day] ?? [];
+                    const ids = result.assignments[day] ?? [];
                     const weekend = day === 'Saturday' || day === 'Sunday';
                     return (
                       <div key={day} className={`cal-col${weekend ? ' weekend' : ''}`}>
@@ -189,8 +206,8 @@ export default function Home() {
                           <span className="cal-en">{DAY_EN[day]}</span>
                         </div>
                         <div className="cal-body">
-                          {names.length > 0
-                            ? names.map(id => (
+                          {ids.length > 0
+                            ? ids.map(id => (
                               <div
                                 key={id} className="cal-tag"
                                 style={{
@@ -203,13 +220,13 @@ export default function Home() {
                                   className="cal-dot"
                                   style={{ background: EMP_COLORS[id] }}
                                 >{id}</span>
-                                員工 {id}
+                                {nameMap[id] || id}
                               </div>
                             ))
                             : <span className="cal-rest">休</span>
                           }
                         </div>
-                        <div className="cal-foot">{names.length} 人</div>
+                        <div className="cal-foot">{ids.length} 人</div>
                       </div>
                     );
                   })}
