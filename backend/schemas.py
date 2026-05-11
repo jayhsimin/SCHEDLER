@@ -18,27 +18,18 @@ class Weekday(str, Enum):
     @classmethod
     def from_chinese(cls, name: str) -> "Weekday":
         mapping = {
-            "周一": cls.monday,
-            "周二": cls.tuesday,
-            "周三": cls.wednesday,
-            "周四": cls.thursday,
-            "周五": cls.friday,
-            "周六": cls.saturday,
-            "周日": cls.sunday,
-            "禮拜一": cls.monday,
-            "禮拜二": cls.tuesday,
-            "禮拜三": cls.wednesday,
-            "禮拜四": cls.thursday,
-            "禮拜五": cls.friday,
-            "禮拜六": cls.saturday,
-            "禮拜日": cls.sunday,
+            "周一": cls.monday, "周二": cls.tuesday, "周三": cls.wednesday,
+            "周四": cls.thursday, "周五": cls.friday, "周六": cls.saturday,
+            "周日": cls.sunday, "禮拜一": cls.monday, "禮拜二": cls.tuesday,
+            "禮拜三": cls.wednesday, "禮拜四": cls.thursday, "禮拜五": cls.friday,
+            "禮拜六": cls.saturday, "禮拜日": cls.sunday,
         }
         return mapping.get(name, name)  # type: ignore
 
 class Employee(BaseModel):
     id: str
     name: str
-    max_shifts_per_week: Optional[int] = 7
+    max_shifts_per_week: Optional[int] = 5  # default 5 days to avoid over-scheduling
     role: Optional[EmployeeRole] = EmployeeRole.regular
 
 class Unavailability(BaseModel):
@@ -75,6 +66,10 @@ class ShiftPreference(BaseModel):
     avoided_days: Optional[List[Weekday]] = []
     weight: Optional[int] = 1
 
+class MutualExclusion(BaseModel):
+    """These employees cannot work on the same day."""
+    employee_ids: List[str]
+
 class ConstraintSet(BaseModel):
     unavailabilities: List[Unavailability] = []
     day_minimums: List[DayMinimum] = []
@@ -83,6 +78,7 @@ class ConstraintSet(BaseModel):
     min_shifts_per_employee: List[MinShiftsPerEmployee] = []
     fairness_constraints: List[FairnessConstraint] = []
     preferences: List[ShiftPreference] = []
+    mutual_exclusions: List[MutualExclusion] = []
 
 class ScheduleRequest(BaseModel):
     text: str

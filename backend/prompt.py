@@ -3,13 +3,16 @@ import os
 import re
 from typing import List, Optional
 
-from .schemas import Employee, ConstraintSet, DayMinimum, DayMaximum, MinShiftsPerEmployee, DayMinimumByRole, FairnessConstraint, ShiftPreference, Unavailability, Weekday, EmployeeRole
+from .schemas import (
+    Employee, ConstraintSet, DayMinimum, DayMaximum, MinShiftsPerEmployee,
+    DayMinimumByRole, FairnessConstraint, Unavailability,
+    Weekday, EmployeeRole, MutualExclusion,
+)
 
-LLM_PROMPT_TEMPLATE = '''
-你是排班約束抽取器。請將使用者的中文或中英混合文字說明，解析成結構化 JSON。
-輸出內容必須完全符合 JSON Schema，不要包含多餘文字。
+LLM_PROMPT_TEMPLATE = '''你是排班約束抽取器。將使用者的自然語言描述精確解析成 JSON。
+只輸出合法 JSON 物件，不包含任何其他文字、說明或 Markdown 標記。
 
-輸出格式：
+支援的約束類型與欄位說明：
 {
   "unavailabilities": [
     {"employee_id":"A", "start_day":"Tuesday", "end_day":"Thursday", "reason":"出國", "type":"vacation"},
@@ -18,39 +21,49 @@ LLM_PROMPT_TEMPLATE = '''
   "day_minimums": [
     {"day":"Wednesday", "min_staff":3}
   ],
+  "day_maximums": [
+    {"day":null, "max_staff":4}
+  ],
+  "mutual_exclusions": [
+    {"employee_ids":["I","J"]}
+  ],
+  "min_shifts_per_employee": [
+    {"employee_id":"E", "min_shifts":2}
+  ],
+  "fairness_constraints": [
+    {"target_shifts_per_person":null}
+  ],
   "preferences": [
     {"employee_id":"C", "preferred_days":["Monday"], "avoided_days":[], "weight":1}
   ]
 }
 
-請將日期統一為英文星期：Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday。
-若無 end_day，請省略該欄位。
-若無偏好，可輸出空陣列。
+規則：
+- 日期統一用英文：Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday
+- 若連續請假/出國，start_day 填起始、end_day 填結束（含），否則省略 end_day
+- mutual_exclusions 表示列出的員工不可在同一天上班，用於「A 和 B 不能同時上班」
+- day_maximums 中 day 為 null 表示每天都套用此上限
+- 所有陣列若無對應約束請輸出空陣列 []
+- 不要輸出 JSON 以外的任何文字
 '''
 
 WEEKDAY_MAP = {
-    "周一": "Monday",
-    "周二": "Tuesday",
-    "周三": "Wednesday",
-    "周四": "Thursday",
-    "周五": "Friday",
-    "周六": "Saturday",
-    "周日": "Sunday",
-    "禮拜一": "Monday",
-    "禮拜二": "Tuesday",
-    "禮拜三": "Wednesday",
-    "禮拜四": "Thursday",
-    "禮拜五": "Friday",
-    "禮拜六": "Saturday",
-    "禮拜日": "Sunday",
+    "周一": "Monday", "周二": "Tuesday", "周三": "Wednesday", "周四": "Thursday",
+    "周五": "Friday", "周六": "Saturday", "周日": "Sunday",
+    "禮拜一": "Monday", "禮拜二": "Tuesday", "禮拜三": "Wednesday",
+    "禮拜四": "Thursday", "禮拜五": "Friday", "禮拜六": "Saturday", "禮拜日": "Sunday",
 }
+
+DAYS_OFFSET = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日": 6}
+DAYS_EN = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
 
 def make_prompt(text: str, employees: List[Employee], daily_staff_count: Optional[int] = None) -> str:
     names = ", ".join(employee.name for employee in employees)
-    prompt = LLM_PROMPT_TEMPLATE + "\n已知員工：" + names + "\n"
+    prompt = LLM_PROMPT_TEMPLATE + f"\n已知員工清單：{names}\n"
     if daily_staff_count is not None:
-        prompt += f"本次排班每日應排 {daily_staff_count} 人。\n"
-    prompt += "使用者輸入：" + text
+        prompt += f"每日應排班人數：{daily_staff_count} 人\n"
+    prompt += f"使用者輸入：{text}"
     return prompt
 
 
@@ -59,134 +72,144 @@ def normalize_weekday(chinese: str) -> Optional[str]:
 
 
 def chinese_numeral_to_int(text: str) -> Optional[int]:
-    mapping = {
-        "一": 1,
-        "二": 2,
-        "兩": 2,
-        "三": 3,
-        "四": 4,
-        "五": 5,
-        "六": 6,
-        "七": 7,
-        "八": 8,
-        "九": 9,
-        "十": 10,
-    }
+    mapping = {"一": 1, "二": 2, "兩": 2, "三": 3, "四": 4, "五": 5,
+               "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
     if text.isdigit():
         return int(text)
-    if text in mapping:
-        return mapping[text]
-    if text == "十":
-        return 10
-    return None
+    return mapping.get(text)
 
 
-def parse_simple_constraints(text: str, employees: List[Employee], daily_staff_count: Optional[int] = None) -> ConstraintSet:
+def _extract_json(raw: str) -> dict:
+    """Extract JSON from LLM response, handling markdown code blocks."""
+    # Strip markdown code fences
+    cleaned = re.sub(r"```(?:json)?\s*", "", raw)
+    cleaned = re.sub(r"```", "", cleaned).strip()
+    # Find the outermost JSON object
+    match = re.search(r"\{[\s\S]*\}", cleaned)
+    if match:
+        return json.loads(match.group(0))
+    return json.loads(cleaned)
+
+
+def parse_simple_constraints(
+    text: str, employees: List[Employee], daily_staff_count: Optional[int] = None
+) -> ConstraintSet:
     text = text.replace("禮拜", "周")
     constraints = ConstraintSet()
+    emp_ids = {e.id for e in employees}
+
+    # ── Vacation / leave unavailabilities ──
     for emp in employees:
-        if emp.name in text:
-            pattern = rf"{emp.name}周([一二三四五六日])(.*?)((?:三天|一天|二天|四天|五天)|$)"
-            match = re.search(pattern, text)
-            if match:
-                start = normalize_weekday("周" + match.group(1))
-                if start and "三天" in text[match.start():match.end()+10]:
-                    end = None
-                    if match.group(1) == "二":
-                        end = "Thursday"
-                    elif match.group(1) == "三":
-                        end = "Friday"
-                    elif match.group(1) == "一":
-                        end = "Wednesday"
-                    if end:
-                        constraints.unavailabilities.append(
-                            Unavailability(
-                                employee_id=emp.id,
-                                start_day=start,
-                                end_day=end,
-                                reason="出國",
-                                type="vacation",
-                            )
-                        )
-    # simple leave patterns
-    for emp in employees:
-        if emp.name + "周三上午" in text and "事假" in text:
+        if emp.name not in text:
+            continue
+        # "X周N開始要出國/旅遊M天" → multi-day absence
+        vac = re.search(
+            rf"{re.escape(emp.name)}周([一二三四五六日])(?:開始)?(?:要)?(?:出國|旅遊|出差)([二三四五]?)天?",
+            text,
+        )
+        if vac:
+            start_ch = vac.group(1)
+            days_ch = vac.group(2) or "三"
+            start_idx = DAYS_OFFSET.get(start_ch, 0)
+            n_days = chinese_numeral_to_int(days_ch) or 3
+            end_idx = min(start_idx + n_days - 1, 6)
             constraints.unavailabilities.append(
                 Unavailability(
                     employee_id=emp.id,
-                    start_day="Wednesday",
-                    reason="事假",
+                    start_day=DAYS_EN[start_idx],
+                    end_day=DAYS_EN[end_idx] if end_idx != start_idx else None,
+                    reason="出國",
+                    type="vacation",
+                )
+            )
+        # "X周N上午要請事假" or "X周N請假"
+        leave = re.search(
+            rf"{re.escape(emp.name)}周([一二三四五六日])(?:上午|下午)?(?:要)?(?:請事假|請假|請病假)",
+            text,
+        )
+        if leave:
+            day_ch = leave.group(1)
+            constraints.unavailabilities.append(
+                Unavailability(
+                    employee_id=emp.id,
+                    start_day=DAYS_EN[DAYS_OFFSET.get(day_ch, 0)],
+                    reason="請假",
                     type="leave",
                 )
             )
-    # simple day minimum patterns
-    min_match = re.search(r"這?周三排班至少要有([一二三四五六七八九十\d]+)個人", text)
-    if min_match:
-        min_staff = chinese_numeral_to_int(min_match.group(1))
-        if min_staff is not None:
-            constraints.day_minimums.append(
-                DayMinimum(day="Wednesday", min_staff=min_staff)
-            )
-    
-    # day maximum patterns (一天最多 N 人)
-    max_match = re.search(r"一天最多(?:只)?(?:需)?([一二三四五六七八九十\d]+)人?", text)
-    if max_match:
-        max_staff = chinese_numeral_to_int(max_match.group(1))
-        if max_staff is not None:
-            constraints.day_maximums.append(
-                DayMaximum(max_staff=max_staff)
-            )
-    
-    # role-based day minimum (老員工每天至少要有兩個人) - MUST be before individual employee patterns
-    if "老員工" in text or "老" in text:
-        pattern = r"老員工?每天至少要有(.+?)個?人"
-        match = re.search(pattern, text)
-        if match:
-            min_staff = chinese_numeral_to_int(match.group(1))
-            if min_staff is not None:
-                constraints.day_minimums_by_role.append(
-                    DayMinimumByRole(role=EmployeeRole.regular, min_staff=min_staff)
-                )
-    
-    # daily_staff_count: treat as a per-day maximum (and minimum) for all days
+
+    # ── Day minimums ──
+    for m in re.finditer(r"(?:這?周([一二三四五六日]))?排班至少(?:要)?有?([一二三四五六七八九十\d]+)個?人", text):
+        day_ch = m.group(1)
+        min_staff = chinese_numeral_to_int(m.group(2))
+        if min_staff:
+            day = DAYS_EN[DAYS_OFFSET[day_ch]] if day_ch else None
+            if day:
+                constraints.day_minimums.append(DayMinimum(day=day, min_staff=min_staff))
+
+    # ── Day maximums ──
+    max_m = re.search(r"一天最多(?:只)?(?:需)?([一二三四五六七八九十\d]+)人?", text)
+    if max_m:
+        max_staff = chinese_numeral_to_int(max_m.group(1))
+        if max_staff:
+            constraints.day_maximums.append(DayMaximum(max_staff=max_staff))
+
+    # ── Mutual exclusions: "員工X(?:、|和|與)員工Y不能同時上班" ──
+    mutual_pattern = re.compile(
+        r"(?:員工)?([A-Ja-j])(?:、|和|與|及)(?:員工)?([A-Ja-j])(?:不能同時上班|不能同時|不能一起上班|不能一起)",
+        re.IGNORECASE,
+    )
+    for m in mutual_pattern.finditer(text):
+        id1, id2 = m.group(1).upper(), m.group(2).upper()
+        if id1 in emp_ids and id2 in emp_ids:
+            constraints.mutual_exclusions.append(MutualExclusion(employee_ids=[id1, id2]))
+
+    # ── daily_staff_count → hard per-day min + max ──
     if daily_staff_count is not None:
         constraints.day_maximums.append(DayMaximum(max_staff=daily_staff_count))
         for day in Weekday:
             constraints.day_minimums.append(DayMinimum(day=day, min_staff=daily_staff_count))
 
-    # fairness constraint (公時要盡量公平)
-    if "公平" in text or "均勻" in text or "平衡" in text:
-        constraints.fairness_constraints.append(
-            FairnessConstraint(target_shifts_per_person=None)
-        )
-    
-    # employee minimum shifts pattern (E 至少一周要上兩天班) - individual employee constraints
+    # ── Role-based minimum ──
+    role_m = re.search(r"老員工?每天至少要有(.+?)個?人", text)
+    if role_m:
+        min_staff = chinese_numeral_to_int(role_m.group(1))
+        if min_staff:
+            constraints.day_minimums_by_role.append(
+                DayMinimumByRole(role=EmployeeRole.regular, min_staff=min_staff)
+            )
+
+    # ── Per-employee min shifts ──
     for emp in employees:
-        pattern = rf"{emp.name}(?:至少|最少)?(?:一)?周?要上(.+?)天班?"
-        match = re.search(pattern, text)
-        if match:
-            min_shifts = chinese_numeral_to_int(match.group(1))
-            if min_shifts is not None:
+        m = re.search(rf"{re.escape(emp.name)}(?:至少|最少)?(?:一)?周?要上([一二三四五六七八九十\d]+)天班?", text)
+        if m:
+            n = chinese_numeral_to_int(m.group(1))
+            if n:
                 constraints.min_shifts_per_employee.append(
-                    MinShiftsPerEmployee(employee_id=emp.id, min_shifts=min_shifts)
+                    MinShiftsPerEmployee(employee_id=emp.id, min_shifts=n)
                 )
-    
-    # new employee pattern (新人一周至少要上兩天班)
-    new_pattern = r"新人一?周?(?:至少)?(?:最少)?要上(.+?)天班?"
-    new_match = re.search(new_pattern, text)
-    if new_match:
-        min_shifts = chinese_numeral_to_int(new_match.group(1))
-        if min_shifts is not None:
-            new_emps = [e for e in employees if e.role == EmployeeRole.new]
-            for emp in new_emps:
-                constraints.min_shifts_per_employee.append(
-                    MinShiftsPerEmployee(employee_id=emp.id, min_shifts=min_shifts)
-                )
-    
+
+    # ── New-employee min shifts ──
+    new_m = re.search(r"新人一?周?(?:至少|最少)?要上([一二三四五六七八九十\d]+)天班?", text)
+    if new_m:
+        n = chinese_numeral_to_int(new_m.group(1))
+        if n:
+            for emp in employees:
+                if emp.role == EmployeeRole.new:
+                    constraints.min_shifts_per_employee.append(
+                        MinShiftsPerEmployee(employee_id=emp.id, min_shifts=n)
+                    )
+
+    # ── Fairness keyword ──
+    if any(kw in text for kw in ("公平", "均勻", "平衡", "平均")):
+        constraints.fairness_constraints.append(FairnessConstraint())
+
     return constraints
 
 
-def extract_constraints_from_text(text: str, employees: List[Employee], daily_staff_count: Optional[int] = None) -> ConstraintSet:
+def extract_constraints_from_text(
+    text: str, employees: List[Employee], daily_staff_count: Optional[int] = None
+) -> ConstraintSet:
     api_key = os.getenv("GROQ_API_KEY")
     model = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
     if api_key:
@@ -195,7 +218,7 @@ def extract_constraints_from_text(text: str, employees: List[Employee], daily_st
             payload = {
                 "model": model,
                 "messages": [{"role": "user", "content": make_prompt(text, employees, daily_staff_count)}],
-                "max_tokens": 512,
+                "max_tokens": 768,
                 "temperature": 0.0,
             }
             response = post(
@@ -205,10 +228,9 @@ def extract_constraints_from_text(text: str, employees: List[Employee], daily_st
                 timeout=20,
             )
             response.raise_for_status()
-            data = response.json()
-            raw_text = data["choices"][0]["message"]["content"]
-            parsed = json.loads(raw_text)
-            return ConstraintSet.parse_obj(parsed)
+            raw = response.json()["choices"][0]["message"]["content"]
+            parsed = _extract_json(raw)
+            return ConstraintSet.model_validate(parsed)
         except Exception:
             pass
     return parse_simple_constraints(text, employees, daily_staff_count)

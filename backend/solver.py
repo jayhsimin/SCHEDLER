@@ -1,19 +1,21 @@
 from ortools.sat.python import cp_model
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
-from .schemas import ConstraintSet, DayMinimum, DayMaximum, MinShiftsPerEmployee, DayMinimumByRole, FairnessConstraint, Employee, Unavailability, Weekday, EmployeeRole
+from .schemas import (
+    ConstraintSet, Employee, Unavailability, Weekday,
+)
 
 DAYS = [
-    Weekday.monday,
-    Weekday.tuesday,
-    Weekday.wednesday,
-    Weekday.thursday,
-    Weekday.friday,
-    Weekday.saturday,
-    Weekday.sunday,
+    Weekday.monday, Weekday.tuesday, Weekday.wednesday, Weekday.thursday,
+    Weekday.friday, Weekday.saturday, Weekday.sunday,
 ]
-
 DAY_INDEX = {day: idx for idx, day in enumerate(DAYS)}
+
+# Objective weights
+_COVERAGE = 2      # reward for each shift assigned
+_GAP_PEN = 4 * len(DAYS)   # penalty per unit of max-min fairness gap (= 28)
+# With these weights, closing a 1-shift gap is worth 28 points ≈ 14 shifts,
+# so fairness dominates coverage when there is meaningful inequity.
 
 
 def expand_unavailability(unavail: Unavailability) -> List[Tuple[str, Weekday]]:
@@ -23,13 +25,12 @@ def expand_unavailability(unavail: Unavailability) -> List[Tuple[str, Weekday]]:
     end = DAY_INDEX[unavail.end_day]
     if end < start:
         end += 7
-    result = []
-    for index in range(start, end + 1):
-        result.append((unavail.employee_id, DAYS[index % 7]))
-    return result
+    return [(unavail.employee_id, DAYS[i % 7]) for i in range(start, end + 1)]
 
 
-def build_unavailability_map(constraints: ConstraintSet) -> Dict[Tuple[str, Weekday], Unavailability]:
+def build_unavailability_map(
+    constraints: ConstraintSet,
+) -> Dict[Tuple[str, Weekday], Unavailability]:
     result: Dict[Tuple[str, Weekday], Unavailability] = {}
     for unavail in constraints.unavailabilities:
         for key in expand_unavailability(unavail):
@@ -39,150 +40,147 @@ def build_unavailability_map(constraints: ConstraintSet) -> Dict[Tuple[str, Week
 
 def solve_schedule(staff_list: List[Employee], constraints: ConstraintSet) -> dict:
     model = cp_model.CpModel()
-    work = {}
-    for employee in staff_list:
-        for day in DAYS:
-            work[(employee.id, day)] = model.NewBoolVar(f"work_{employee.id}_{day}")
+    emp_ids = {e.id for e in staff_list}
 
+    # Decision variables: work[employee_id][day] ∈ {0, 1}
+    work = {
+        (e.id, d): model.NewBoolVar(f"w_{e.id}_{d.value}")
+        for e in staff_list
+        for d in DAYS
+    }
+
+    # ── Hard constraints ──
+
+    # Unavailabilities
     unavail_map = build_unavailability_map(constraints)
-    for employee in staff_list:
-        for day in DAYS:
-            if (employee.id, day) in unavail_map:
-                model.Add(work[(employee.id, day)] == 0)
+    for (eid, day), _ in unavail_map.items():
+        if (eid, day) in work:
+            model.Add(work[(eid, day)] == 0)
 
-    for day_min in constraints.day_minimums:
-        if day_min.day not in DAY_INDEX:
-            continue
-        model.Add(
-            sum(work[(employee.id, day_min.day)] for employee in staff_list) >= day_min.min_staff
-        )
+    # Per-day minimums
+    for dm in constraints.day_minimums:
+        if dm.day in DAY_INDEX:
+            model.Add(sum(work[(e.id, dm.day)] for e in staff_list) >= dm.min_staff)
 
-    for day_max in constraints.day_maximums:
-        if day_max.day is None:
+    # Per-day maximums
+    for dm in constraints.day_maximums:
+        days_to_cap = DAYS if dm.day is None else ([dm.day] if dm.day in DAY_INDEX else [])
+        for day in days_to_cap:
+            model.Add(sum(work[(e.id, day)] for e in staff_list) <= dm.max_staff)
+
+    # Per-employee shift cap (max_shifts_per_week, default 5)
+    for e in staff_list:
+        model.Add(sum(work[(e.id, d)] for d in DAYS) <= (e.max_shifts_per_week or 5))
+
+    # Per-employee minimum shifts
+    for em in constraints.min_shifts_per_employee:
+        if em.employee_id in emp_ids:
+            model.Add(sum(work[(em.employee_id, d)] for d in DAYS) >= em.min_shifts)
+
+    # Role-based day minimums
+    for rm in constraints.day_minimums_by_role:
+        role_emps = [e for e in staff_list if e.role == rm.role]
+        days_to_check = DAYS if rm.day is None else ([rm.day] if rm.day in DAY_INDEX else [])
+        for day in days_to_check:
+            model.Add(sum(work[(e.id, day)] for e in role_emps) >= rm.min_staff)
+
+    # Mutual exclusions: at most 1 of the listed employees per day
+    for excl in constraints.mutual_exclusions:
+        valid = [eid for eid in excl.employee_ids if eid in emp_ids]
+        if len(valid) >= 2:
             for day in DAYS:
-                model.Add(
-                    sum(work[(employee.id, day)] for employee in staff_list) <= day_max.max_staff
-                )
-        else:
-            if day_max.day not in DAY_INDEX:
-                continue
-            model.Add(
-                sum(work[(employee.id, day_max.day)] for employee in staff_list) <= day_max.max_staff
-            )
+                model.Add(sum(work[(eid, day)] for eid in valid) <= 1)
 
-    for emp_min in constraints.min_shifts_per_employee:
-        model.Add(
-            sum(work[(emp_min.employee_id, day)] for day in DAYS) >= emp_min.min_shifts
-        )
+    # ── Fairness objective ──
 
-    for role_min in constraints.day_minimums_by_role:
-        role_employees = [e for e in staff_list if e.role == role_min.role]
-        if role_min.day is None:
-            for day in DAYS:
-                model.Add(
-                    sum(work[(e.id, day)] for e in role_employees) >= role_min.min_staff
-                )
-        else:
-            if role_min.day not in DAY_INDEX:
-                continue
-            model.Add(
-                sum(work[(e.id, role_min.day)] for e in role_employees) >= role_min.min_staff
-            )
-
-    for employee in staff_list:
-        model.Add(
-            sum(work[(employee.id, day)] for day in DAYS) <= employee.max_shifts_per_week
-        )
-
+    # Total shifts per employee
     total_shifts = {}
-    for employee in staff_list:
-        total_shifts[employee.id] = model.NewIntVar(0, len(DAYS), f"total_shifts_{employee.id}")
-        model.Add(total_shifts[employee.id] == sum(work[(employee.id, day)] for day in DAYS))
+    for e in staff_list:
+        ts = model.NewIntVar(0, len(DAYS), f"ts_{e.id}")
+        model.Add(ts == sum(work[(e.id, d)] for d in DAYS))
+        total_shifts[e.id] = ts
 
-    objective_terms = []
+    # Max-min fairness gap across all employees
+    n = len(staff_list)
+    obj_terms = []
+
+    if n > 1:
+        max_s = model.NewIntVar(0, len(DAYS), "max_s")
+        min_s = model.NewIntVar(0, len(DAYS), "min_s")
+        model.AddMaxEquality(max_s, list(total_shifts.values()))
+        model.AddMinEquality(min_s, list(total_shifts.values()))
+        gap = model.NewIntVar(0, len(DAYS), "gap")
+        model.Add(gap == max_s - min_s)
+        obj_terms.append(-_GAP_PEN * gap)
+
+    # Coverage reward (secondary to fairness)
+    for w in work.values():
+        obj_terms.append(_COVERAGE * w)
+
+    # Soft preferences
     for pref in constraints.preferences:
+        if pref.employee_id not in emp_ids:
+            continue
+        weight = pref.weight or 1
         for day in DAYS:
-            if day in pref.preferred_days:
-                objective_terms.append(work[(pref.employee_id, day)] * pref.weight)
-            if day in pref.avoided_days:
-                objective_terms.append((1 - work[(pref.employee_id, day)]) * pref.weight)
-    objective_terms.extend(work.values())
-    
-    # Fairness objective: minimize shift differences between employees in the same role
-    if constraints.fairness_constraints:
-        for role in [EmployeeRole.regular, EmployeeRole.new]:
-            role_employees = [e for e in staff_list if e.role == role]
-            for i, emp1 in enumerate(role_employees):
-                for emp2 in role_employees[i + 1:]:
-                    diff = model.NewIntVar(-len(DAYS), len(DAYS), f"diff_{emp1.id}_{emp2.id}")
-                    abs_diff = model.NewIntVar(0, len(DAYS), f"abs_diff_{emp1.id}_{emp2.id}")
-                    model.Add(diff == total_shifts[emp1.id] - total_shifts[emp2.id])
-                    model.AddAbsEquality(abs_diff, diff)
-                    objective_terms.append(-abs_diff * 10)
-    
-    model.Maximize(sum(objective_terms))
+            if day in (pref.preferred_days or []):
+                obj_terms.append(work[(pref.employee_id, day)] * weight)
+            if day in (pref.avoided_days or []):
+                obj_terms.append((1 - work[(pref.employee_id, day)]) * weight)
+
+    model.Maximize(sum(obj_terms))
 
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 5
-    solver.parameters.num_search_workers = 8
+    solver.parameters.max_time_in_seconds = 10
+    solver.parameters.num_search_workers = 4
     status = solver.Solve(model)
-    if status != cp_model.OPTIMAL and status != cp_model.FEASIBLE:
+
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         return {
             "status": "INFEASIBLE",
             "conflicts": analyze_infeasibility(staff_list, constraints),
         }
 
     assignments = {
-        day.value: [employee.id for employee in staff_list if solver.Value(work[(employee.id, day)]) == 1]
+        day.value: [e.id for e in staff_list if solver.Value(work[(e.id, day)]) == 1]
         for day in DAYS
     }
-    return {
-        "status": "OPTIMAL",
-        "assignments": assignments,
-        "objective": solver.ObjectiveValue(),
-        "conflicts": [],
-    }
+    return {"status": "OPTIMAL", "assignments": assignments, "conflicts": []}
 
 
 def analyze_infeasibility(staff_list: List[Employee], constraints: ConstraintSet) -> List[str]:
     messages: List[str] = []
     unavail_map = build_unavailability_map(constraints)
-    for day_min in constraints.day_minimums:
-        available = [employee.id for employee in staff_list if (employee.id, day_min.day) not in unavail_map]
-        if len(available) < day_min.min_staff:
-            unavailable = [
-                unavail_map[(employee.id, day_min.day)]
-                for employee in staff_list
-                if (employee.id, day_min.day) in unavail_map
+    emp_ids = {e.id for e in staff_list}
+
+    for dm in constraints.day_minimums:
+        available = [e.id for e in staff_list if (e.id, dm.day) not in unavail_map]
+        if len(available) < dm.min_staff:
+            blocked = [
+                f"{unavail_map[(e.id, dm.day)].employee_id}({unavail_map[(e.id, dm.day)].reason or '不可用'})"
+                for e in staff_list if (e.id, dm.day) in unavail_map
             ]
-            reasons = ", ".join(
-                f'{u.employee_id}({u.reason or u.type or "unavailable"})' for u in unavailable
-            )
             messages.append(
-                f"{day_min.day.value} 需至少 {day_min.min_staff} 人，只有 {len(available)} 人可排班。" 
-                f"造成衝突的不可用項目：{reasons}。"
+                f"{dm.day.value} 需至少 {dm.min_staff} 人，但只有 {len(available)} 人可排班。"
+                f"受限員工：{', '.join(blocked)}。"
             )
-    
-    for day_max in constraints.day_maximums:
-        if day_max.day is None:
-            available_count = sum(1 for emp in staff_list if not any((emp.id, day) in unavail_map for day in DAYS))
-            if available_count > day_max.max_staff * 7:
-                messages.append(
-                    f"每天最多 {day_max.max_staff} 人，但可用員工數 {len(staff_list)} > {day_max.max_staff}。"
-                    f"需要考慮增加班次或減少員工可上班天數。"
-                )
-    
-    for emp_min in constraints.min_shifts_per_employee:
-        employee = next((e for e in staff_list if e.id == emp_min.employee_id), None)
-        if not employee:
+
+    for em in constraints.min_shifts_per_employee:
+        emp = next((e for e in staff_list if e.id == em.employee_id), None)
+        if not emp:
             continue
-        unavail_days = sum(1 for day in DAYS if (employee.id, day) in unavail_map)
-        available_days = 7 - unavail_days
-        if available_days < emp_min.min_shifts:
+        available_days = sum(1 for d in DAYS if (emp.id, d) not in unavail_map)
+        if available_days < em.min_shifts:
             messages.append(
-                f"員工 {employee.id} 需至少上 {emp_min.min_shifts} 天班，但只有 {available_days} 天可排班。"
+                f"員工 {emp.id} 需至少上 {em.min_shifts} 天班，但只有 {available_days} 天可排班。"
             )
-    
-    if not messages and constraints.unavailabilities:
-        messages.append("現有約束導致排班無解，請檢查請假或出國需求是否過多。")
+
+    for excl in constraints.mutual_exclusions:
+        valid = [eid for eid in excl.employee_ids if eid in emp_ids]
+        if len(valid) >= 2:
+            # Check if ALL days are blocked for at least one of them with min_shifts constraints
+            pass  # OR-Tools will catch true infeasibility
+
+    if not messages:
+        messages.append("現有約束條件互相衝突，無法產生合法班表，請檢查約束是否過嚴。")
     return messages
