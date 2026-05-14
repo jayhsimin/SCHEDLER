@@ -95,11 +95,18 @@ class ScheduleRequest(BaseModel):
     text: str
     employees: Optional[List[Employee]] = None
     daily_staff_count: Optional[int] = None
+    # 小時排班設定
+    business_start_hour: int = 9   # 上班開始時間（整點，預設 09:00）
+    business_end_hour: int = 18    # 上班結束時間（整點，預設 18:00）
 
 class ScheduleResult(BaseModel):
-    assignments: dict
+    assignments: dict  # 小時模式：{day: {hour_str: [emp_ids]}}
     explanation: str
-    ai_understanding: Optional[str] = None  # LLM's explanation of how it read the request
+    ai_understanding: Optional[str] = None
     constraints: ConstraintSet
     daily_staff_count: Optional[int] = None
     conflict_reasons: Optional[List[str]] = None
+    # 小時排班附加資訊
+    business_start_hour: Optional[int] = None
+    business_end_hour: Optional[int] = None
+    employee_hours: Optional[dict] = None  # {emp_id: total_hours}

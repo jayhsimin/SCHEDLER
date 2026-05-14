@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import React, { useState } from 'react';
 
 interface Employee {
   id: string;
@@ -9,10 +9,14 @@ interface Employee {
 }
 
 interface ScheduleResponse {
-  assignments: Record<string, string[]>;
+  // 小時模式：{day: {hour_str: emp_ids[]}}
+  assignments: Record<string, Record<string, string[]>>;
   explanation: string;
   ai_understanding?: string;
   conflict_reasons?: string[];
+  business_start_hour?: number;
+  business_end_hour?: number;
+  employee_hours?: Record<string, number>;
 }
 
 const DEFAULT_EMPLOYEES: Employee[] = [
@@ -28,11 +32,13 @@ const DEFAULT_EMPLOYEES: Employee[] = [
   { id: 'J', name: 'J', role: 'new' },
 ];
 
-const EMP_COLORS: Record<string, string> = {
-  A: '#3b82f6', B: '#10b981', C: '#f59e0b', D: '#ef4444',
-  E: '#8b5cf6', F: '#06b6d4', G: '#f97316', H: '#ec4899',
-  I: '#14b8a6', J: '#a855f7',
-};
+// 動態顏色調色盤，依員工在清單中的索引循環使用
+const COLOR_PALETTE = [
+  '#3b82f6', '#10b981', '#f59e0b', '#ef4444',
+  '#8b5cf6', '#06b6d4', '#f97316', '#ec4899',
+  '#14b8a6', '#a855f7', '#84cc16', '#f43f5e',
+  '#0ea5e9', '#d946ef', '#22c55e', '#fb923c',
+];
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const DAY_ZH: Record<string, string> = {
@@ -53,6 +59,9 @@ export default function Home() {
   );
   const [text, setText] = useState('');
   const [dailyStaffCount, setDailyStaffCount] = useState<number | ''>('');
+  // 上下班時間（整點）
+  const [startHour, setStartHour] = useState(9);
+  const [endHour, setEndHour] = useState(18);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ScheduleResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -69,13 +78,24 @@ export default function Home() {
 
   const nameMap = Object.fromEntries(employees.map(e => [e.id, e.name]));
 
+  // 依員工在清單中的順序取色
+  const getEmpColor = (id: string): string => {
+    const idx = employees.findIndex(e => e.id === id);
+    return COLOR_PALETTE[(idx >= 0 ? idx : 0) % COLOR_PALETTE.length];
+  };
+
   const handleSubmit = async (e: React.SyntheticEvent) => {
     e.preventDefault();
     setError(null);
     setLoading(true);
     setResult(null);
     const selectedEmployees = employees.filter(emp => selectedIds.has(emp.id));
-    const body: Record<string, unknown> = { text, employees: selectedEmployees };
+    const body: Record<string, unknown> = {
+      text,
+      employees: selectedEmployees,
+      business_start_hour: startHour,
+      business_end_hour: endHour,
+    };
     if (dailyStaffCount !== '') body.daily_staff_count = dailyStaffCount;
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
@@ -93,11 +113,24 @@ export default function Home() {
     }
   };
 
+  // 計算結果的小時列表
+  const resultHours = result?.business_start_hour !== undefined && result?.business_end_hour !== undefined
+    ? Array.from({ length: result.business_end_hour - result.business_start_hour },
+        (_, i) => result.business_start_hour! + i)
+    : [];
+
+  // 計算總班次數（人·時）
+  const totalPersonHours = result?.employee_hours
+    ? Object.values(result.employee_hours).reduce((a, b) => a + b, 0)
+    : 0;
+
+  const hasAssignments = result && Object.keys(result.assignments).length > 0;
+
   return (
     <div className="app">
       <header className="header">
         <h1>AI Agent 智慧排班系統</h1>
-        <p>以自然語言描述需求，AI 自動生成最佳班表</p>
+        <p>以自然語言描述需求，AI 自動生成最佳班表（細分至小時，公平分配）</p>
       </header>
 
       <main className="main">
@@ -111,24 +144,27 @@ export default function Home() {
               <div key={role} className="emp-group">
                 <p className="emp-group-label">{role === 'regular' ? '正職員工' : '新進員工'}</p>
                 <div className="emp-list">
-                  {employees.filter(e => e.role === role).map(emp => (
-                    <div
-                      key={emp.id}
-                      className={`emp-chip ${selectedIds.has(emp.id) ? 'selected' : ''}`}
-                      style={{ '--c': EMP_COLORS[emp.id] } as React.CSSProperties}
-                      onClick={() => toggle(emp.id)}
-                    >
-                      <span className="emp-avatar">{emp.id}</span>
-                      <input
-                        className="emp-name-input"
-                        value={emp.name}
-                        onChange={ev => updateName(emp.id, ev.target.value)}
-                        onClick={ev => ev.stopPropagation()}
-                        placeholder={emp.id}
-                        maxLength={10}
-                      />
-                    </div>
-                  ))}
+                  {employees.filter(e => e.role === role).map((emp, _ri) => {
+                    const color = getEmpColor(emp.id);
+                    return (
+                      <div
+                        key={emp.id}
+                        className={`emp-chip ${selectedIds.has(emp.id) ? 'selected' : ''}`}
+                        style={{ '--c': color } as React.CSSProperties}
+                        onClick={() => toggle(emp.id)}
+                      >
+                        <span className="emp-avatar">{emp.id}</span>
+                        <input
+                          className="emp-name-input"
+                          value={emp.name}
+                          onChange={ev => updateName(emp.id, ev.target.value)}
+                          onClick={ev => ev.stopPropagation()}
+                          placeholder={emp.id}
+                          maxLength={10}
+                        />
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             ))}
@@ -141,12 +177,36 @@ export default function Home() {
           <section className="panel">
             <h2 className="panel-title">排班設定</h2>
             <form onSubmit={handleSubmit} className="form">
+              {/* 上下班時間 */}
               <div className="field">
-                <label>每日排班人數（選填）</label>
+                <label>上班時段</label>
+                <div className="hour-range-row">
+                  <input
+                    type="number" min={0} max={23}
+                    value={startHour}
+                    onChange={e => setStartHour(Number(e.target.value))}
+                    className="hour-input"
+                  />
+                  <span className="hour-sep">:00 到</span>
+                  <input
+                    type="number" min={1} max={24}
+                    value={endHour}
+                    onChange={e => setEndHour(Number(e.target.value))}
+                    className="hour-input"
+                  />
+                  <span className="hour-sep">:00</span>
+                </div>
+                <span className="field-hint">
+                  共 {Math.max(0, endHour - startHour)} 小時 / 天
+                </span>
+              </div>
+
+              <div className="field">
+                <label>每小時最低人數（選填）</label>
                 <input
                   type="number" min={1} value={dailyStaffCount}
                   onChange={e => setDailyStaffCount(e.target.value === '' ? '' : Number(e.target.value))}
-                  placeholder="例：3"
+                  placeholder="例：2"
                 />
               </div>
               <div className="field">
@@ -186,7 +246,6 @@ export default function Home() {
             </section>
           )}
 
-
           {result && (
             <>
               {result.ai_understanding && (
@@ -196,52 +255,107 @@ export default function Home() {
                 </div>
               )}
 
-              {Object.keys(result.assignments).length > 0 ? (
-                <section className="panel">
-                  <div className="result-header">
-                    <h2 className="panel-title" style={{ margin: 0 }}>本週班表</h2>
-                    <span className="result-badge">
-                      共 {Object.values(result.assignments).flat().length} 班次
-                    </span>
-                  </div>
+              {hasAssignments ? (
+                <>
+                  {/* ── 小時時間軸班表 ── */}
+                  <section className="panel">
+                    <div className="result-header">
+                      <h2 className="panel-title" style={{ margin: 0 }}>本週班表</h2>
+                      <span className="result-badge">
+                        共 {totalPersonHours} 人·時
+                      </span>
+                    </div>
 
-                  <div className="calendar">
-                    {DAYS.map(day => {
-                      const ids = result.assignments[day] ?? [];
-                      const weekend = day === 'Saturday' || day === 'Sunday';
-                      return (
-                        <div key={day} className={`cal-col${weekend ? ' weekend' : ''}`}>
-                          <div className="cal-head">
-                            <span className="cal-zh">{DAY_ZH[day]}</span>
-                            <span className="cal-en">{DAY_EN[day]}</span>
-                          </div>
-                          <div className="cal-body">
-                            {ids.length > 0
-                              ? ids.map(id => (
+                    <div className="hourly-grid-wrapper">
+                      <div
+                        className="hourly-grid"
+                        style={{ gridTemplateColumns: `52px repeat(7, 1fr)` }}
+                      >
+                        {/* 標題列 */}
+                        <div className="hgrid-corner" />
+                        {DAYS.map(day => {
+                          const isWeekend = day === 'Saturday' || day === 'Sunday';
+                          return (
+                            <div key={day} className={`hgrid-day-head${isWeekend ? ' weekend' : ''}`}>
+                              <span className="cal-zh">{DAY_ZH[day]}</span>
+                              <span className="cal-en">{DAY_EN[day]}</span>
+                            </div>
+                          );
+                        })}
+
+                        {/* 每小時一列 */}
+                        {resultHours.map(h => (
+                          <React.Fragment key={h}>
+                            <div className="hgrid-time">
+                              {String(h).padStart(2, '0')}:00
+                            </div>
+                            {DAYS.map(day => {
+                              const isWeekend = day === 'Saturday' || day === 'Sunday';
+                              const dayData = result.assignments[day] as Record<string, string[]> | undefined;
+                              const workers = dayData?.[String(h)] ?? [];
+                              return (
                                 <div
-                                  key={id} className="cal-tag"
-                                  style={{
-                                    background: EMP_COLORS[id] + '1a',
-                                    borderColor: EMP_COLORS[id],
-                                    color: EMP_COLORS[id],
-                                  }}
+                                  key={`${day}-${h}`}
+                                  className={`hgrid-cell${isWeekend ? ' weekend' : ''}${workers.length === 0 ? ' empty' : ''}`}
                                 >
-                                  <span
-                                    className="cal-dot"
-                                    style={{ background: EMP_COLORS[id] }}
-                                  >{id}</span>
-                                  {nameMap[id] || id}
+                                  {workers.map(id => (
+                                    <span
+                                      key={id}
+                                      className="hgrid-tag"
+                                      style={{
+                                        background: getEmpColor(id) + '25',
+                                        borderColor: getEmpColor(id),
+                                        color: getEmpColor(id),
+                                      }}
+                                    >
+                                      {nameMap[id] || id}
+                                    </span>
+                                  ))}
                                 </div>
-                              ))
-                              : <span className="cal-rest">休</span>
-                            }
-                          </div>
-                          <div className="cal-foot">{ids.length} 人</div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </section>
+                              );
+                            })}
+                          </React.Fragment>
+                        ))}
+                      </div>
+                    </div>
+                  </section>
+
+                  {/* ── 員工時數統計 ── */}
+                  {result.employee_hours && (
+                    <section className="panel">
+                      <h2 className="panel-title">員工時數統計</h2>
+                      <div className="emp-hours-list">
+                        {Object.entries(result.employee_hours)
+                          .sort(([, a], [, b]) => b - a)
+                          .map(([id, hrs]) => {
+                            const maxHrs = Math.max(...Object.values(result.employee_hours!));
+                            const color = getEmpColor(id);
+                            return (
+                              <div key={id} className="emp-hours-row">
+                                <span
+                                  className="emp-hours-avatar"
+                                  style={{ background: color }}
+                                >
+                                  {id}
+                                </span>
+                                <span className="emp-hours-name">{nameMap[id] || id}</span>
+                                <div className="emp-hours-bar-wrap">
+                                  <div
+                                    className="emp-hours-bar"
+                                    style={{
+                                      width: `${maxHrs > 0 ? (hrs / maxHrs) * 100 : 0}%`,
+                                      background: color,
+                                    }}
+                                  />
+                                </div>
+                                <span className="emp-hours-val">{hrs}h</span>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    </section>
+                  )}
+                </>
               ) : (
                 <section className="panel conflict-panel">
                   <h2 className="panel-title">無法產生班表</h2>
@@ -253,7 +367,7 @@ export default function Home() {
                 </section>
               )}
 
-              {Object.keys(result.assignments).length > 0 && result.conflict_reasons && result.conflict_reasons.length > 0 && (
+              {hasAssignments && result.conflict_reasons && result.conflict_reasons.length > 0 && (
                 <section className="panel conflict-panel">
                   <h2 className="panel-title">驗證警告</h2>
                   <ul className="conflict-list">
