@@ -3,6 +3,8 @@ import os
 import re
 from typing import List, Optional
 
+from langsmith import traceable
+
 from .schemas import (
     Employee, ConstraintSet, DayMinimum, DayMaximum,
     MinShiftsPerEmployee, MaxShiftsPerEmployee,
@@ -416,6 +418,28 @@ def _supplement_regex(constraints: ConstraintSet, text: str, employees: List[Emp
                     )
 
 
+@traceable(name="groq_llm_call", run_type="llm")
+def _call_groq(messages: list[dict], model: str, api_key: str) -> str:
+    """單次 Groq HTTP 呼叫，抽離成獨立函式讓 LangSmith 記錄完整 inputs/output。"""
+    from requests import post
+    payload = {
+        "model": model,
+        "messages": messages,
+        "response_format": {"type": "json_object"},
+        "max_tokens": 1024,
+        "temperature": 0.0,
+    }
+    resp = post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=20,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
+
+
+@traceable(name="extract_constraints", run_type="chain")
 def extract_constraints_from_text(
     text: str, employees: List[Employee], daily_staff_count: Optional[int] = None
 ) -> ConstraintSet:
@@ -426,27 +450,12 @@ def extract_constraints_from_text(
     constraints: Optional[ConstraintSet] = None
 
     if api_key:
-        from requests import post
         messages = make_messages(text, employees, daily_staff_count)
         last_raw: Optional[str] = None
 
         for attempt in range(2):
             try:
-                payload = {
-                    "model": model,
-                    "messages": messages,
-                    "response_format": {"type": "json_object"},
-                    "max_tokens": 1024,
-                    "temperature": 0.0,
-                }
-                resp = post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json=payload,
-                    timeout=20,
-                )
-                resp.raise_for_status()
-                last_raw = resp.json()["choices"][0]["message"]["content"]
+                last_raw = _call_groq(messages, model, api_key)
                 parsed = _extract_json(last_raw)
                 constraints = ConstraintSet.model_validate(parsed)
                 _supplement_regex(constraints, text, employees)

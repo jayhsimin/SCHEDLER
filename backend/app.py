@@ -3,6 +3,7 @@ load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from langsmith import traceable
 
 from .prompt import extract_constraints_from_text
 from .schemas import Employee, EmployeeRole, ScheduleRequest, ScheduleResult, ConstraintSet
@@ -33,20 +34,13 @@ def parse_constraints(request: ScheduleRequest) -> ConstraintSet:
     return extract_constraints_from_text(request.text, employees, request.daily_staff_count)
 
 
-@app.post("/schedule", response_model=ScheduleResult)
-def schedule(request: ScheduleRequest) -> ScheduleResult:
-    # 使用前端傳入的選定人員清單；若未提供則回退到預設清單
-    employees = request.employees if request.employees is not None else DEFAULT_EMPLOYEES
-    if not employees:
-        return ScheduleResult(
-            assignments={},
-            explanation="請至少選擇一位排班人員。",
-            constraints=ConstraintSet(),
-            conflict_reasons=["未選擇任何排班人員"],
-            business_start_hour=request.business_start_hour,
-            business_end_hour=request.business_end_hour,
-        )
-
+@traceable(name="schedule_pipeline", run_type="chain")
+def _run_schedule_pipeline(request: ScheduleRequest, employees: list) -> ScheduleResult:
+    """
+    排班三步驟 Pipeline，以 @traceable 包覆讓 LangSmith 可追蹤每個子步驟。
+    Step 1 (extract_constraints) 與 Step 3 (groq_llm_call) 各自也有 @traceable，
+    在 LangSmith UI 中會顯示為巢狀 Span，方便定位是哪一層出了問題。
+    """
     start_hour = request.business_start_hour
     end_hour = request.business_end_hour
 
@@ -112,3 +106,19 @@ def schedule(request: ScheduleRequest) -> ScheduleResult:
         business_end_hour=end_hour,
         employee_hours=employee_hours,
     )
+
+
+@app.post("/schedule", response_model=ScheduleResult)
+def schedule(request: ScheduleRequest) -> ScheduleResult:
+    # 使用前端傳入的選定人員清單；若未提供則回退到預設清單
+    employees = request.employees if request.employees is not None else DEFAULT_EMPLOYEES
+    if not employees:
+        return ScheduleResult(
+            assignments={},
+            explanation="請至少選擇一位排班人員。",
+            constraints=ConstraintSet(),
+            conflict_reasons=["未選擇任何排班人員"],
+            business_start_hour=request.business_start_hour,
+            business_end_hour=request.business_end_hour,
+        )
+    return _run_schedule_pipeline(request, employees)
