@@ -129,8 +129,7 @@ export default function Home() {
   return (
     <div className="app">
       <header className="header">
-        <h1>AI Agent 智慧排班系統</h1>
-        <p>以自然語言描述需求，AI 自動生成最佳班表（細分至小時，公平分配）</p>
+        <h1>智慧排班系統</h1>
       </header>
 
       <main className="main">
